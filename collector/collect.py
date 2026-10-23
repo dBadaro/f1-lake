@@ -6,6 +6,7 @@ from pathlib import Path
 
 import fastf1
 import pandas as pd
+from fastf1.exceptions import RateLimitExceededError
 
 from collector.config import SESSIONS, local_path
 
@@ -13,6 +14,8 @@ log = logging.getLogger(__name__)
 
 CACHE_DIR = "./cache"
 SESSION_SLEEP_S = 2  # rate limit Jolpica
+RATE_LIMIT_WAIT_S = 15 * 60  # espera ao bater 500 calls/h antes de tentar de novo
+RATE_LIMIT_RETRIES = 18      # ~4,5 h de espera no pior caso (timeout do runner: 5,5 h)
 
 
 def enable_cache() -> None:
@@ -38,14 +41,24 @@ def _rounds(year: int) -> list[int]:
 
 
 def _load_session(year: int, round_no: int, name: str):
-    """Carrega a sessão; inexistente ou erro HTTP → None (loga e continua)."""
-    try:
-        session = fastf1.get_session(year, round_no, name)
-        session.load(telemetry=False, weather=True, messages=False)
-        return session
-    except Exception as exc:
-        log.warning("skip %d r%02d %s: %s", year, round_no, name, exc)
-        return None
+    """Carrega a sessão; rate limit → espera e tenta de novo; outro erro → None."""
+    for attempt in range(RATE_LIMIT_RETRIES + 1):
+        try:
+            session = fastf1.get_session(year, round_no, name)
+            session.load(telemetry=False, weather=True, messages=False)
+            return session
+        except RateLimitExceededError:
+            if attempt == RATE_LIMIT_RETRIES:
+                log.warning("skip %d r%02d %s: rate limit persistente", year, round_no, name)
+                return None
+            log.warning(
+                "rate limit %d r%02d %s — aguardando %d min (tentativa %d/%d)",
+                year, round_no, name, RATE_LIMIT_WAIT_S // 60, attempt + 1, RATE_LIMIT_RETRIES,
+            )
+            time.sleep(RATE_LIMIT_WAIT_S)
+        except Exception as exc:
+            log.warning("skip %d r%02d %s: %s", year, round_no, name, exc)
+            return None
 
 
 def collect_schedule(year: int) -> list[Path]:
