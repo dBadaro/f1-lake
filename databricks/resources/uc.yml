@@ -1,0 +1,28 @@
+variables:
+  catalog:
+    description: Catalog UC do projeto
+    default: prod
+
+resources:
+  # Catalog "prod" é criado uma única vez pela UI (Default Storage — a API
+  # de catalog não funciona na Free Edition sem MANAGED LOCATION).
+  schemas:
+    f1_raw:
+      catalog_name: ${var.catalog}
+      name: f1_raw
+    f1_bronze:
+      catalog_name: ${var.catalog}
+      name: f1_bronze
+    f1_silver:
+      catalog_name: ${var.catalog}
+      name: f1_silver
+    f1_gold:
+      catalog_name: ${var.catalog}
+      name: f1_gold
+
+  volumes:
+    landing:
+      catalog_name: ${var.catalog}
+      schema_name: f1_raw
+      name: landing
+      volume_type: MANAGED

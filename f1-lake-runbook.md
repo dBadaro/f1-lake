@@ -8,7 +8,7 @@
 
 ```
 [GitHub Actions]                     [Azure Storage]              [Databricks Free Edition]
- collector.py (FastF1)  ──parquet──▶ container "raw"              catalog main
+ collector.py (FastF1)  ──parquet──▶ container "raw"              catalog prod
  upload.py                           brazilsouth · LRS · HNS       ├─ schema f1_raw  → volume landing (parquet)
    ├─ ADLS (SDK)                     (raw permanente / backup)     ├─ schema f1_bronze (Delta, fiel à origem)
    └─ Files API + PAT                                              ├─ schema f1_silver (entidades limpas)
@@ -181,7 +181,7 @@ def upload_adls(local: Path, remote: str):
 def upload_databricks(local: Path, remote: str):
     host = os.environ["DATABRICKS_HOST"].rstrip("/")
     token = os.environ["DATABRICKS_TOKEN"]
-    url = f"{host}/api/2.0/fs/files/Volumes/main/f1_raw/landing/{remote}?overwrite=true"
+    url = f"{host}/api/2.0/fs/files/Volumes/prod/f1_raw/landing/{remote}?overwrite=true"
     r = requests.put(url, headers={"Authorization": f"Bearer {token}"},
                      data=local.read_bytes(), timeout=300)
     r.raise_for_status()
@@ -290,7 +290,7 @@ jobs:
 
 ## Fase 3 — Databricks: CLI, PAT e bundle com o UC (≈ 1 h)
 
-> Criamos aqui: schemas `f1_raw`, `f1_bronze`, `f1_silver`, `f1_gold` no catalog `main` + volume `landing` onde o collector joga os parquets.
+> Criamos aqui: catalog `prod` + schemas `f1_raw`, `f1_bronze`, `f1_silver`, `f1_gold` + volume `landing` onde o collector joga os parquets. (Ajuste em relação à versão original: em vez do catalog `main` do workspace, usamos um catalog próprio `prod` — projeto isolado.)
 
 ### 3.1 Autenticar o CLI (PAT — OAuth **não funciona** na Free Edition)
 
@@ -331,41 +331,50 @@ workspace:
 
 **`databricks/resources/uc.yml`**
 ```yaml
+variables:
+  catalog:
+    description: Catalog UC do projeto
+    default: prod
+
 resources:
+  # Catalog "prod" é criado uma única vez pela UI (Default Storage — a API
+  # de catalog não funciona na Free Edition sem MANAGED LOCATION).
   schemas:
     f1_raw:
-      catalog_name: main
+      catalog_name: ${var.catalog}
       name: f1_raw
     f1_bronze:
-      catalog_name: main
+      catalog_name: ${var.catalog}
       name: f1_bronze
     f1_silver:
-      catalog_name: main
+      catalog_name: ${var.catalog}
       name: f1_silver
     f1_gold:
-      catalog_name: main
+      catalog_name: ${var.catalog}
       name: f1_gold
 
   volumes:
     landing:
-      catalog_name: main
+      catalog_name: ${var.catalog}
       schema_name: f1_raw
       name: landing
       volume_type: MANAGED
 ```
+
+**Criar o catalog `prod` na UI (uma única vez):** Catalog Explorer → **Create catalog** → nome `prod` → na opção de storage, escolher **Default Storage** → Create. (Via API/bundle dá erro `INVALID_STATE: Metastore storage root URL does not exist` — limitação da Free Edition.)
 
 ### 3.3 Deploy
 
 ```powershell
 cd C:\dev\f1-lake\databricks
 databricks bundle validate
-databricks bundle deploy -t dev
+databricks bundle deploy   # sem -t: o bundle só tem o target default
 ```
 
 > Se o CLI reclamar "databricks OAuth is not supported for this host": limitação conhecida da Free Edition — autentique sempre via `databricks configure` com PAT.
 
 ### ✅ Checkpoint F3
-Databricks UI → **Catalog**: schemas `f1_raw`, `f1_bronze`, `f1_silver`, `f1_gold` e o volume `main.f1_raw.landing` visíveis.
+Databricks UI → **Catalog**: schemas `f1_raw`, `f1_bronze`, `f1_silver`, `f1_gold` e o volume `prod.f1_raw.landing` visíveis.
 
 ---
 
@@ -381,8 +390,8 @@ Repo GitHub → **Actions → collect → Run workflow**:
 > **Por que em chunks:** laps é pesado (~1 h/ano). Chunks evitam estourar o timeout do runner (6 h) e facilitam re-run de ano com falha.
 
 ### ✅ Checkpoint F4
-1. Databricks UI → **Catalog → main → f1_raw → landing**: pastas `schedule/`, `results/`, `laps/`, `weather/` com `year=2018..2026`
-2. Sanidade via SQL Editor (warehouse 2X-Small): `LIST '/Volumes/main/f1_raw/landing/results';`
+1. Databricks UI → **Catalog → prod → f1_raw → landing**: pastas `schedule/`, `results/`, `laps/`, `weather/` com `year=2018..2026`
+2. Sanidade via SQL Editor (warehouse 2X-Small): `LIST '/Volumes/prod/f1_raw/landing/results';`
 
 ---
 
@@ -393,16 +402,16 @@ Repo GitHub → **Actions → collect → Run workflow**:
 **`databricks/src/bronze.py`**
 
 ```python
-SRC = "/Volumes/main/f1_raw/landing"
+SRC = "/Volumes/prod/f1_raw/landing"
 
 for dataset in ["schedule", "results", "laps", "weather"]:
     df = spark.read.parquet(f"{SRC}/{dataset}")
     df.write.mode("overwrite").option("overwriteSchema", "true") \
-        .saveAsTable(f"main.f1_bronze.{dataset}")
+        .saveAsTable(f"prod.f1_bronze.{dataset}")
 ```
 
 ### ✅ Checkpoint F5
-4 tabelas em `main.f1_bronze`; contagem por ano em `results` cobre 2018→2026 (~24 GPs/ano × ~20 pilotos).
+4 tabelas em `prod.f1_bronze`; contagem por ano em `results` cobre 2018→2026 (~24 GPs/ano × ~20 pilotos).
 
 ---
 
@@ -410,7 +419,7 @@ for dataset in ["schedule", "results", "laps", "weather"]:
 
 > Silver = limpeza, tipagem e joins. Referência de modelagem: as feature stores do Téo (`fs_f1_driver_life`), agora com laps/weather integrados.
 
-Tabelas alvo (todas `main.f1_silver.*`):
+Tabelas alvo (todas `prod.f1_silver.*`):
 
 | Tabela | Conteúdo |
 |---|---|
@@ -426,12 +435,12 @@ Padrão bronze → silver (exemplo):
 ```python
 from pyspark.sql import functions as F
 
-results = spark.table("main.f1_bronze.results")
+results = spark.table("prod.f1_bronze.results")
 (results
   .withColumn("position_order", F.col("Position").cast("int"))
   .withColumn("fl_finished", F.col("Status").rlike("^Finished|^\\+").cast("int"))
   .write.mode("overwrite").option("overwriteSchema", "true")
-  .saveAsTable("main.f1_silver.results_clean"))
+  .saveAsTable("prod.f1_silver.results_clean"))
 ```
 
 ### ✅ Checkpoint F6
@@ -450,7 +459,7 @@ results = spark.table("main.f1_bronze.results")
 | `race_weather_impact` | resultado vs. condições climáticas por corrida |
 
 ### ✅ Checkpoint F7
-`SELECT * FROM main.f1_gold.championship_history WHERE year = 2024` retorna a classificação final correta (conferir com reportagem da época).
+`SELECT * FROM prod.f1_gold.championship_history WHERE year = 2024` retorna a classificação final correta (conferir com reportagem da época).
 
 ---
 

@@ -1,0 +1,8 @@
+bundle:
+  name: f1-lake
+
+include:
+  - resources/*.yml
+
+workspace:
+  host: https://dbc-8fd2d0f7-2d84.cloud.databricks.com

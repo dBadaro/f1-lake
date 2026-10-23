@@ -10,7 +10,7 @@ from azure.storage.blob import BlobServiceClient
 log = logging.getLogger(__name__)
 
 CONTAINER = "raw"
-VOLUME_URL = "{host}/api/2.0/fs/files/Volumes/main/f1_raw/landing/{remote}"
+VOLUME_URL = "{host}/api/2.0/fs/files/Volumes/prod/f1_raw/landing/{remote}"
 
 
 def upload_adls(local: Path, remote: str) -> None:

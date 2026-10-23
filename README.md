@@ -1,7 +1,7 @@
 # F1 Lake — collector
 
 Coleta de dados de Fórmula 1 (2018 → hoje) via FastF1 e upload duplo:
-ADLS Gen2 (container `raw`) + Volume Databricks (`main.f1_raw.landing`).
+ADLS Gen2 (container `raw`) + Volume Databricks (`prod.f1_raw.landing`).
 
 ## Uso
 
