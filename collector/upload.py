@@ -21,8 +21,8 @@ def upload_adls(local: Path, remote: str) -> None:
 
 
 def upload_databricks(local: Path, remote: str) -> None:
-    host = os.environ["DATABRICKS_HOST"].rstrip("/")
-    token = os.environ["DATABRICKS_TOKEN"]
+    host = os.environ["DATABRICKS_HOST"].strip().rstrip("/")
+    token = os.environ["DATABRICKS_TOKEN"].strip()
     url = VOLUME_URL.format(host=host, remote=remote)
     r = requests.put(
         url,
@@ -34,9 +34,13 @@ def upload_databricks(local: Path, remote: str) -> None:
 
 
 def upload_pair(local: Path, remote: str) -> None:
-    """ADLS sempre; volume Databricks só se as envs existirem (graceful degradation)."""
+    """ADLS sempre; volume Databricks é best-effort (falha não derruba o job)."""
     upload_adls(local, remote)
     if os.environ.get("DATABRICKS_HOST") and os.environ.get("DATABRICKS_TOKEN"):
-        upload_databricks(local, remote)
+        try:
+            upload_databricks(local, remote)
+        except Exception:
+            log.warning("upload Databricks falhou para %s — enviado só no ADLS", remote,
+                        exc_info=True)
     else:
         log.warning("DATABRICKS_HOST/TOKEN ausentes — %s enviado só no ADLS", remote)
