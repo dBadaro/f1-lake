@@ -44,6 +44,11 @@ jobs:
           echo "from=$FROM" >> "$GITHUB_OUTPUT"
           echo "to=$TO" >> "$GITHUB_OUTPUT"
       - run: pip install -r collector/requirements.txt
+      - name: Autenticar F1TV (livetiming — laps/weather — exige login)
+        run: python -m fastf1 auth f1tv --authenticate
+        env:
+          F1_USERNAME: ${{ secrets.F1TV_USERNAME }}
+          F1_PASSWORD: ${{ secrets.F1TV_PASSWORD }}
       - run: python collector/main.py --years $(seq -s ' ' "${{ steps.years.outputs.from }}" "${{ steps.years.outputs.to }}") --datasets ${{ inputs.datasets }}
         env:
           AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}

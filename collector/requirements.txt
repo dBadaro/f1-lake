@@ -1,4 +1,6 @@
-fastf1
+# 3.9.0a0: obrigatória — F1 exigiu login nos endpoints de livetiming
+# (laps/weather); versões <= 3.8.x quebraram. Ver README (auth F1TV).
+fastf1==3.9.0a0
 pandas
 pyarrow
 azure-storage-blob

@@ -74,7 +74,8 @@ def collect_schedule(year: int) -> list[Path]:
 
 def collect_per_session(year: int, dataset: str) -> list[Path]:
     """results/laps/weather: 1 parquet por sessão existente."""
-    attr = {"results": "results", "laps": "laps", "weather": "weather"}[dataset]
+    # FastF1 >= 3.9: session.weather virou session.weather_data
+    attr = {"results": "results", "laps": "laps", "weather": "weather_data"}[dataset]
     saved = []
     for round_no in _rounds(year):
         for name in SESSIONS:

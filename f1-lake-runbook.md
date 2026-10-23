@@ -193,13 +193,23 @@ Se as envs do Databricks não existirem → avisa e sobe só no ADLS (graceful d
 
 **`collector/requirements.txt`**
 ```
-fastf1
+# 3.9.0a0: obrigatória — F1 exigiu login nos endpoints de livetiming
+# (laps/weather); versões <= 3.8.x quebraram. Requer auth F1TV (abaixo).
+fastf1==3.9.0a0
 pandas
 pyarrow
 azure-storage-blob
 requests
 python-dotenv
 ```
+
+> **Auth F1TV (ajuste vs. original):** a F1 desligou o acesso anônimo ao
+> livetiming (laps/weather/telemetria → 401; mirror comunitário vazio). Com
+> FastF1 ≥ 3.9.0a0 e uma conta F1TV **free**, autentique uma vez por máquina:
+> `python -m fastf1 auth f1tv --authenticate`. Token em
+> `%LOCALAPPDATA%\fastf1\f1auth_token.json`, expira sem refresh. No Actions o
+> workflow autentica com os secrets `F1TV_USERNAME` / `F1TV_PASSWORD`. Além
+> disso, na 3.9 o atributo `session.weather` virou `session.weather_data`.
 
 ### 2.5 Teste local antes do Actions (amostra pequena)
 
@@ -224,6 +234,7 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
 | `AZURE_STORAGE_CONNECTION_STRING` | `<AZ_CONN_STR>` da Fase 1 |
 | `DATABRICKS_HOST` | URL do workspace (`https://dbc-xxxx.cloud.databricks.com`) |
 | `DATABRICKS_TOKEN` | PAT — gerar **agora**: workspace Databricks → seu usuário (topo dir) → **Settings → Developer → Access tokens → Manage → Generate new token** (lifetime 90 dias; copie na hora — não aparece de novo) |
+| `F1TV_USERNAME` / `F1TV_PASSWORD` | login da conta F1TV (free) — usados pelo step de auth do livetiming (laps/weather) |
 
 > ⚠️ PAT auto-expira se ficar 90 dias **sem uso** — o job semanal mantém vivo. Falhou com 401? Gere outra e atualize o secret.
 
@@ -272,6 +283,11 @@ jobs:
           echo "from=$FROM" >> "$GITHUB_OUTPUT"
           echo "to=$TO" >> "$GITHUB_OUTPUT"
       - run: pip install -r collector/requirements.txt
+      - name: Autenticar F1TV (livetiming — laps/weather — exige login)
+        run: python -m fastf1 auth f1tv --authenticate
+        env:
+          F1_USERNAME: ${{ secrets.F1TV_USERNAME }}
+          F1_PASSWORD: ${{ secrets.F1TV_PASSWORD }}
       - run: python collector/main.py --years $(seq -s ' ' "${{ steps.years.outputs.from }}" "${{ steps.years.outputs.to }}") --datasets "${{ inputs.datasets || 'schedule results laps weather' }}"
         env:
           AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
