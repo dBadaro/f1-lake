@@ -1,0 +1,9 @@
+.venv/
+cache/
+data/
+*.parquet
+.env
+inicio azure.txt
+lake.duckdb
+lake.duckdb.wal
+__pycache__/

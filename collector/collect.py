@@ -1,0 +1,84 @@
+"""Extração FastF1 → parquet local, por dataset."""
+
+import logging
+import time
+from pathlib import Path
+
+import fastf1
+import pandas as pd
+
+from collector.config import SESSIONS, local_path
+
+log = logging.getLogger(__name__)
+
+CACHE_DIR = "./cache"
+SESSION_SLEEP_S = 2  # rate limit Jolpica
+
+
+def enable_cache() -> None:
+    Path(CACHE_DIR).mkdir(exist_ok=True)
+    fastf1.Cache.enable_cache(CACHE_DIR)
+
+
+def _save(df: pd.DataFrame, path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(path, index=False)  # idempotente: mesmo nome sobrescreve
+    log.info("salvo: %s (%d linhas)", path, len(df))
+    return path
+
+
+def _event_schedule(year: int):
+    """Calendário do ano, sem testes (RoundNumber sempre presente)."""
+    return fastf1.get_event_schedule(year, include_testing=False)
+
+
+def _rounds(year: int) -> list[int]:
+    """RoundNumbers do calendário do ano."""
+    return [int(r) for r in _event_schedule(year)["RoundNumber"].dropna()]
+
+
+def _load_session(year: int, round_no: int, name: str):
+    """Carrega a sessão; inexistente ou erro HTTP → None (loga e continua)."""
+    try:
+        session = fastf1.get_session(year, round_no, name)
+        session.load(telemetry=False, weather=True, messages=False)
+        return session
+    except Exception as exc:
+        log.warning("skip %d r%02d %s: %s", year, round_no, name, exc)
+        return None
+
+
+def collect_schedule(year: int) -> list[Path]:
+    """1 linha/evento — um parquet por evento do calendário."""
+    calendar = _event_schedule(year)
+    saved = []
+    for _, event in calendar.iterrows():
+        round_no = int(event["RoundNumber"])
+        df = event.to_frame().T.reset_index(drop=True)
+        saved.append(_save(df, local_path("schedule", year, round_no, "schedule")))
+    return saved
+
+
+def collect_per_session(year: int, dataset: str) -> list[Path]:
+    """results/laps/weather: 1 parquet por sessão existente."""
+    attr = {"results": "results", "laps": "laps", "weather": "weather"}[dataset]
+    saved = []
+    for round_no in _rounds(year):
+        for name in SESSIONS:
+            session = _load_session(year, round_no, name)
+            if session is None:
+                continue
+            df = getattr(session, attr)
+            if df is None or len(df) == 0:
+                continue
+            if dataset == "laps":
+                df = df.reset_index(drop=True)
+            saved.append(_save(df, local_path(dataset, year, round_no, name)))
+            time.sleep(SESSION_SLEEP_S)
+    return saved
+
+
+def collect(year: int, dataset: str) -> list[Path]:
+    if dataset == "schedule":
+        return collect_schedule(year)
+    return collect_per_session(year, dataset)

@@ -1,0 +1,6 @@
+fastf1
+pandas
+pyarrow
+azure-storage-blob
+requests
+python-dotenv
