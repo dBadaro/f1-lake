@@ -81,7 +81,12 @@ def collect_per_session(year: int, dataset: str) -> list[Path]:
             session = _load_session(year, round_no, name)
             if session is None:
                 continue
-            df = getattr(session, attr)
+            try:
+                df = getattr(session, attr)
+            except Exception as exc:
+                # ex. DataNotLoadedError quando o livetiming falha no load
+                log.warning("skip %d r%02d %s (%s): %s", year, round_no, name, dataset, exc)
+                continue
             if df is None or len(df) == 0:
                 continue
             if dataset == "laps":
