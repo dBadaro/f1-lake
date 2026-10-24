@@ -40,12 +40,17 @@ def _rounds(year: int) -> list[int]:
     return [int(r) for r in _event_schedule(year)["RoundNumber"].dropna()]
 
 
-def _load_session(year: int, round_no: int, name: str):
-    """Carrega a sessão; rate limit → espera e tenta de novo; outro erro → None."""
+def _load_session(year: int, round_no: int, name: str, need_laps: bool, need_weather: bool):
+    """Carrega a sessão; rate limit → espera e tenta de novo; outro erro → None.
+
+    Carrega só o que o dataset pede: evita baixar timing (lento, WAF da F1
+    bloqueia IP de datacenter) quando o dataset é results/weather.
+    """
     for attempt in range(RATE_LIMIT_RETRIES + 1):
         try:
             session = fastf1.get_session(year, round_no, name)
-            session.load(telemetry=False, weather=True, messages=False)
+            session.load(telemetry=False, weather=need_weather, laps=need_laps,
+                         messages=False)
             return session
         except RateLimitExceededError:
             if attempt == RATE_LIMIT_RETRIES:
@@ -76,10 +81,11 @@ def collect_per_session(year: int, dataset: str) -> list[Path]:
     """results/laps/weather: 1 parquet por sessão existente."""
     # FastF1 >= 3.9: session.weather virou session.weather_data
     attr = {"results": "results", "laps": "laps", "weather": "weather_data"}[dataset]
+    need_laps, need_weather = dataset == "laps", dataset == "weather"
     saved = []
     for round_no in _rounds(year):
         for name in SESSIONS:
-            session = _load_session(year, round_no, name)
+            session = _load_session(year, round_no, name, need_laps, need_weather)
             if session is None:
                 continue
             try:
