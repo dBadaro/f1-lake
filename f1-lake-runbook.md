@@ -255,9 +255,9 @@ on:
         description: "Ano final (vazio = ano atual)"
         required: false
       datasets:
-        description: "Datasets: schedule results laps weather"
+        description: "Datasets: schedule results (laps/weather NÃO funcionam no Actions — IP de datacenter bloqueado pela F1; coletar local)"
         required: false
-        default: "schedule results laps weather"
+        default: "schedule results"
 
 concurrency:
   group: collect
@@ -266,7 +266,7 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 330       # margem antes do limite de 6 h do runner
+    timeout-minutes: 320       # margem antes do limite de 6 h do runner
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -283,12 +283,10 @@ jobs:
           echo "from=$FROM" >> "$GITHUB_OUTPUT"
           echo "to=$TO" >> "$GITHUB_OUTPUT"
       - run: pip install -r collector/requirements.txt
-      - name: Autenticar F1TV (livetiming — laps/weather — exige login)
-        run: python -m fastf1 auth f1tv --authenticate
-        env:
-          F1_USERNAME: ${{ secrets.F1TV_USERNAME }}
-          F1_PASSWORD: ${{ secrets.F1TV_PASSWORD }}
-      - run: python collector/main.py --years $(seq -s ' ' "${{ steps.years.outputs.from }}" "${{ steps.years.outputs.to }}") --datasets "${{ inputs.datasets || 'schedule results laps weather' }}"
+      # laps/weather via livetiming real exigem IP residencial: aqui só
+      # schedule/results (Jolpica). O collector pula sessões que já existem
+      # no ADLS, então timeout/estouro de rate limit nunca perde progresso.
+      - run: python collector/main.py --years $(seq -s ' ' "${{ steps.years.outputs.from }}" "${{ steps.years.outputs.to }}") --datasets ${{ inputs.datasets || 'schedule results' }}
         env:
           AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
@@ -394,16 +392,38 @@ Databricks UI → **Catalog**: schemas `f1_raw`, `f1_bronze`, `f1_silver`, `f1_g
 
 ---
 
-## Fase 4 — Backfill 2018 → hoje (≈ 1 h de supervisão)
+## Fase 4 — Backfill 2018 → hoje
 
-### 4.1 Disparar em chunks
+> **Ajuste vs. original (out/2026):** a F1 passou a exigir login no livetiming e
+> **bloqueia IP de datacenter** — laps/weather nunca funcionam no runner do
+> Actions (o FastF1 cai num mirror comunitário vazio e as sessões "carregam"
+> sem dados). Estratégia: schedule + results no **Actions**; laps + weather na
+> **máquina local** (IP residencial + auth F1TV), onde o livetiming real
+> responde. O collector pula sessões que já existem no ADLS — todo backfill é
+> resumível; timeout/queda retoma no re-run.
 
-Repo GitHub → **Actions → collect → Run workflow**:
-- `from_year=2018, to_year=2021` → aguardar concluir
-- `from_year=2022, to_year=2024` → aguardar
-- `from_year=2025, to_year=2026` → aguardar
+### 4.1 schedule + results — Actions (ano a ano)
 
-> **Por que em chunks:** laps é pesado (~1 h/ano). Chunks evitam estourar o timeout do runner (6 h) e facilitam re-run de ano com falha.
+Repo GitHub → **Actions → collect → Run workflow**: `from_year=2022, to_year=2022`
+→ depois `2026` (os demais anos já estão no ADLS). Anos/sessões já coletados são
+pulados sozinhos; se o run bater rate limit e cair, re-dispare — ele continua.
+
+### 4.2 laps + weather — máquina local (≈ 4-6 h/ano)
+
+```powershell
+python -m fastf1 auth f1tv --status       # token válido? (re-autentique se expirou)
+python collector\main.py --years 2023 --datasets laps weather
+```
+
+Rodar um ano por vez (pode deixar noturno). Ordem sugerida: 2023, 2024, 2025,
+**2021 com `--overwrite`** (recolhe os parquets da era mirror com dados reais),
+2018-2020, 2022, 2026.
+
+### 4.3 Espelhar ADLS → volume Databricks (uma vez)
+
+```powershell
+python collector\sync_volume.py   # precisa de DATABRICKS_HOST/TOKEN no .env
+```
 
 ### ✅ Checkpoint F4
 1. Databricks UI → **Catalog → prod → f1_raw → landing**: pastas `schedule/`, `results/`, `laps/`, `weather/` com `year=2018..2026`
@@ -528,7 +548,8 @@ Jobs UI: run manual verde, ponta a ponta < 10 min. Schedule ativo pra segundas.
 |---|---|---|
 | Actions falha 401 no upload Databricks | PAT expirada (90 d sem uso) | Gerar nova → atualizar secret `DATABRICKS_TOKEN` |
 | CLI: "databricks OAuth is not supported" | Free Edition não tem OAuth | Sempre `databricks configure` com PAT |
-| FastF1 HTTP 429 | Rate limit Jolpica | Aumentar sleep em `collect.py`, re-run do ano |
+| FastF1 HTTP 429 | Rate limit Jolpica (200/h) / demais APIs (500/h) | Pacing já embutido no collector; se ainda estourar, re-run — retoma de onde parou |
+| laps/weather vazios em run do Actions | WAF da F1 bloqueia IP de datacenter (mirror vazio) | Nunca coletar laps/weather no Actions — usar a máquina local (Fase 4.2) |
 | Job serverless não roda | Fair use excedido no dia | Aguardar reset; rodar em chunks menores |
 | 403 no Files API | PAT sem permissão no volume | Regenere o PAT (você é admin do seu workspace) |
 | Storage account/conn string esquecidos | — | `az storage account list` (Fase 1.2) regenera a connection string |

@@ -29,4 +29,5 @@ def local_path(dataset: str, year: int, round_no: int, session: str) -> Path:
 
 
 def remote_path(dataset: str, year: int, round_no: int, session: str) -> str:
-    return local_path(dataset, year, round_no, session).as_posix()
+    """Path remoto (ADLS/volume) = path local sem o prefixo RAW_ROOT."""
+    return local_path(dataset, year, round_no, session).relative_to(RAW_ROOT).as_posix()

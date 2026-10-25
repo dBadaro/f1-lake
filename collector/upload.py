@@ -5,17 +5,31 @@ import os
 from pathlib import Path
 
 import requests
-from azure.storage.blob import BlobServiceClient
+from azure.storage.blob import BlobServiceClient, ContainerClient
 
 log = logging.getLogger(__name__)
 
 CONTAINER = "raw"
 VOLUME_URL = "{host}/api/2.0/fs/files/Volumes/prod/f1_raw/landing/{remote}"
 
+_container: ContainerClient | None = None
+
+
+def _get_container() -> ContainerClient:
+    global _container
+    if _container is None:
+        svc = BlobServiceClient.from_connection_string(
+            os.environ["AZURE_STORAGE_CONNECTION_STRING"])
+        _container = svc.get_container_client(CONTAINER)
+    return _container
+
+
+def blob_exists(remote: str) -> bool:
+    return _get_container().get_blob_client(blob=remote).exists()
+
 
 def upload_adls(local: Path, remote: str) -> None:
-    svc = BlobServiceClient.from_connection_string(os.environ["AZURE_STORAGE_CONNECTION_STRING"])
-    svc.get_blob_client(container=CONTAINER, blob=remote).upload_blob(
+    _get_container().get_blob_client(blob=remote).upload_blob(
         local.read_bytes(), overwrite=True
     )
 

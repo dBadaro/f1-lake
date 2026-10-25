@@ -2,30 +2,60 @@
 
 import logging
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import fastf1
 import pandas as pd
 from fastf1.exceptions import RateLimitExceededError
 
-from collector.config import SESSIONS, local_path
+from collector import upload
+from collector.config import SESSIONS, local_path, remote_path
 
 log = logging.getLogger(__name__)
 
 CACHE_DIR = "./cache"
-SESSION_SLEEP_S = 2  # rate limit Jolpica
-RATE_LIMIT_WAIT_S = 15 * 60  # espera ao bater 500 calls/h antes de tentar de novo
-RATE_LIMIT_RETRIES = 18      # ~4,5 h de espera no pior caso (timeout do runner: 5,5 h)
+SESSION_SLEEP_S = 1  # cortesia entre sessões; o pacing real é no fastf1.req
+RATE_LIMIT_WAIT_S = 10 * 60  # espera ao estourar o contador de chamadas/h
+RATE_LIMIT_RETRIES = 10
+
+# pacing sob os limites que o próprio fastf1 impõe (fastf1/req.py):
+# Jolpica 200/h, demais APIs (livetiming real + mirror) 500/h
+PACE_JOPLICA_S = 3600 / 190
+PACE_GENERAL_S = 3600 / 450
 
 
 def enable_cache() -> None:
     Path(CACHE_DIR).mkdir(exist_ok=True)
     fastf1.Cache.enable_cache(CACHE_DIR)
+    pace_apis()
+
+
+def pace_apis() -> None:
+    """Espalha as chamadas HTTP do FastF1 abaixo dos limites por hora.
+
+    Sem isso o collector estoura o contador em minutos e entra no ciclo
+    RateLimitExceeded → sleep → estoura de novo (foi o que consumiu 5h15 de
+    sleep no run de 2023 cancelado no timeout). Ajusta o intervalo mínimo das
+    instâncias privadas `_MinIntervalLimitDelay` da 3.9.0a0 (pinned no
+    requirements); se a estrutura interna mudar, segue com o padrão.
+    """
+    try:
+        from fastf1 import req as ff_req
+
+        for pattern, limiters in ff_req._SessionWithRateLimiting._RATE_LIMITS.items():
+            interval = PACE_JOPLICA_S if "jolpi" in pattern.pattern else PACE_GENERAL_S
+            for lim in limiters:
+                if lim.__class__.__name__ == "_MinIntervalLimitDelay":
+                    lim._interval = interval
+    except Exception:
+        log.warning("pacing do fastf1.req indisponível — usando limites padrão",
+                    exc_info=True)
 
 
 def _save(df: pd.DataFrame, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, index=False)  # idempotente: mesmo nome sobrescreve
+    df.to_parquet(path, index=False)  # idempotente: mesmo nome de arquivo sobrescreve
     log.info("salvo: %s (%d linhas)", path, len(df))
     return path
 
@@ -66,25 +96,30 @@ def _load_session(year: int, round_no: int, name: str, need_laps: bool, need_wea
             return None
 
 
-def collect_schedule(year: int) -> list[Path]:
+def collect_schedule(year: int) -> Iterator[Path]:
     """1 linha/evento — um parquet por evento do calendário."""
     calendar = _event_schedule(year)
-    saved = []
     for _, event in calendar.iterrows():
         round_no = int(event["RoundNumber"])
         df = event.to_frame().T.reset_index(drop=True)
-        saved.append(_save(df, local_path("schedule", year, round_no, "schedule")))
-    return saved
+        yield _save(df, local_path("schedule", year, round_no, "schedule"))
 
 
-def collect_per_session(year: int, dataset: str) -> list[Path]:
-    """results/laps/weather: 1 parquet por sessão existente."""
+def collect_per_session(year: int, dataset: str, skip_existing: bool = True) -> Iterator[Path]:
+    """results/laps/weather: 1 parquet por sessão existente.
+
+    Com skip_existing, sessões cujo parquet já está no ADLS não são nem
+    carregadas — re-runs de backfill retomam de onde pararam.
+    """
     # FastF1 >= 3.9: session.weather virou session.weather_data
     attr = {"results": "results", "laps": "laps", "weather": "weather_data"}[dataset]
     need_laps, need_weather = dataset == "laps", dataset == "weather"
-    saved = []
     for round_no in _rounds(year):
         for name in SESSIONS:
+            remote = remote_path(dataset, year, round_no, name)
+            if skip_existing and upload.blob_exists(remote):
+                log.info("existe no ADLS, pulando: %s", remote)
+                continue
             session = _load_session(year, round_no, name, need_laps, need_weather)
             if session is None:
                 continue
@@ -98,12 +133,12 @@ def collect_per_session(year: int, dataset: str) -> list[Path]:
                 continue
             if dataset == "laps":
                 df = df.reset_index(drop=True)
-            saved.append(_save(df, local_path(dataset, year, round_no, name)))
+            yield _save(df, local_path(dataset, year, round_no, name))
             time.sleep(SESSION_SLEEP_S)
-    return saved
 
 
-def collect(year: int, dataset: str) -> list[Path]:
+def collect(year: int, dataset: str, skip_existing: bool = True) -> Iterator[Path]:
     if dataset == "schedule":
-        return collect_schedule(year)
-    return collect_per_session(year, dataset)
+        yield from collect_schedule(year)
+    else:
+        yield from collect_per_session(year, dataset, skip_existing)

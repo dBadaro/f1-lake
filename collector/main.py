@@ -19,6 +19,9 @@ def main() -> None:
                         help="Anos a coletar, ex: --years 2018 2019 2020")
     parser.add_argument("--datasets", nargs="+", choices=DATASETS, default=DATASETS,
                         help="Datasets a coletar (default: todos)")
+    parser.add_argument("--overwrite", action="store_true",
+                        help="Recoleta mesmo se o parquet já existir no ADLS "
+                             "(default: pular sessões já coletadas)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -28,11 +31,13 @@ def main() -> None:
     counts: dict[tuple[int, str], int] = {}
     for year in args.years:
         for dataset in args.datasets:
-            paths = collect.collect(year, dataset)
-            for path in paths:
+            n = 0
+            # upload por arquivo, imediato: timeout/crash não perde trabalho
+            for path in collect.collect(year, dataset, skip_existing=not args.overwrite):
                 remote = path.relative_to(RAW_ROOT).as_posix()
                 upload_pair(path, remote)
-            counts[(year, dataset)] = len(paths)
+                n += 1
+            counts[(year, dataset)] = n
 
     print("\n=== Resumo ===")
     for (year, dataset), n in sorted(counts.items()):
