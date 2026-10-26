@@ -9,6 +9,15 @@ from azure.storage.blob import BlobServiceClient, ContainerClient
 
 log = logging.getLogger(__name__)
 
+try:
+    # AV (Kaspersky) reemite o HTTPS do python.exe com root própria: o certifi
+    # não confia, mas o repositório de certificados do Windows sim.
+    import truststore
+
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 CONTAINER = "raw"
 VOLUME_URL = "{host}/api/2.0/fs/files/Volumes/prod/f1_raw/landing/{remote}"
 

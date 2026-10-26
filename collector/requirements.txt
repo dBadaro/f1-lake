@@ -6,3 +6,6 @@ pyarrow
 azure-storage-blob
 requests
 python-dotenv
+# valida HTTPS pelo repositório de certificados do Windows (AVs como Kaspersky
+# interceptam HTTPS do python.exe; o bundle estático do certifi não confia)
+truststore
