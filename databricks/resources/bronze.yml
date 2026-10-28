@@ -1,0 +1,28 @@
+# Job Bronze (Fase 5): (re)cria prod.f1_bronze.{results,laps,weather} a partir
+# do volume landing — ver docstring de ../src/bronze.py (colunas de contexto
+# year/round/event/_source_file derivadas do nome do arquivo).
+#
+# Deploy (na pasta databricks/):  databricks bundle deploy
+# Rodar:                          databricks bundle run bronze
+# Execuções no workspace: Jobs & Pipelines → f1-lake-bronze
+
+resources:
+  jobs:
+    bronze:
+      name: f1-lake-bronze
+      # overwrite por tabela: nunca deixar dois runs simultâneos
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: bronze
+          # python_file_task seria o tipo "nativo" p/ script puro, mas o CLI
+          # local (1.21.0) ainda não conhece o campo e o descarta no deploy;
+          # spark_python_task roda igual no serverless via environment_key.
+          spark_python_task:
+            # caminho relativo a este YAML
+            python_file: ../src/bronze.py
+          # Free Edition: serverless (sem cluster clássico)
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"

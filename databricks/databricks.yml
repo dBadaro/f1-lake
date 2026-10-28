@@ -5,4 +5,4 @@ include:
   - resources/*.yml
 
 workspace:
-  host: https://dbc-8fd2d0f7-2d84.cloud.databricks.com
+  host: https://dbc-b3e4bf62-4761.cloud.databricks.com
