@@ -85,7 +85,18 @@ redescobrir, mas não precisa reler para prosseguir.
    cast preserva instantes); **laps/2021 (32 stale da era mirror) foram
    APAGADOS do ADLS/volume** — a fila noturna recoleta 2021 SEM
    `--overwrite`.
-7. **Pendência opcional:** trocar o secret `DATABRICKS_TOKEN` no GitHub —
+7. **Fase 6 — Silver: ✅ COMPLETA (29/10).** 7 tabelas `prod.f1_silver.*`
+   criadas pelo job `f1-lake-silver` (snake_case, durações ns→s; sem sufixo
+   _clean): dim_drivers 44, dim_constructors 20, races 196, results 10.494
+   (2018-2026), laps 187.182, **pit_stops** 19.286 (derivada: PitInTime
+   volta N + PitOutTime N+1), weather 34.143 (2023-2025). **Checkpoint F6
+   passou 100%**: órfãos results↔dim_drivers = 0; 70 corridas com pit stops;
+   totais silver = bronze (results/laps/weather). Fix no caminho: resumo
+   final usava min/max(year) também nas dims (que têm first/last_year).
+   Cadência pós-backfill: `bundle run bronze` → `bundle run silver`. Runbook
+   Fase 6 reescrito com as correções da revisão. Pendente: commit dos
+   arquivos da Silver (diff já revisado pelo usuário — aprovar e push).
+8. **Pendência opcional:** trocar o secret `DATABRICKS_TOKEN` no GitHub —
    ainda tem o token ANTIGO (inválido); o `.env` local já tem o PAT novo. Sem
    isso, runs do Actions continuam sem subir ao volume (best-effort,
    inofensivo — o sync cobre).

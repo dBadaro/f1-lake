@@ -1,0 +1,29 @@
+# Job Silver (Fase 6): cria/recria as 7 tabelas prod.f1_silver.* a partir da
+# Bronze — ver docstring de ../src/silver.py (snake_case, durações ns→s,
+# pit_stops derivada, checkpoint F6 embutido no fim do run).
+#
+# DEPENDÊNCIA: rodar o job bronze antes (a Silver lê prod.f1_bronze.*).
+# Cadência: após cada noite de backfill → bundle run bronze → bundle run silver.
+#
+# Deploy (na pasta databricks/):  databricks bundle deploy
+# Rodar:                          databricks bundle run silver
+# Execuções no workspace: Jobs & Pipelines → f1-lake-silver
+
+resources:
+  jobs:
+    silver:
+      name: f1-lake-silver
+      # overwrite por tabela: nunca deixar dois runs simultâneos
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: silver
+          # CLI 1.21.0 descarta python_file_task silenciosamente (ver bronze.yml)
+          spark_python_task:
+            # caminho relativo a este YAML
+            python_file: ../src/silver.py
+          # Free Edition: serverless; este workspace só lança no canal 2
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            client: "2"

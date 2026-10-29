@@ -435,52 +435,71 @@ python collector\sync_volume.py   # precisa de DATABRICKS_HOST/TOKEN no .env
 
 > Bronze = parquet do volume → tabelas Delta gerenciadas, **fiel à origem** (sem transformação de negócio). `CREATE OR REPLACE` a cada run (volume pequeno, idempotente — sem merge).
 
-**`databricks/src/bronze.py`**
+**`databricks/src/bronze.py`** (o esboço abaixo cresceu; o arquivo é a fonte
+da verdade — resumo do que ele faz de fato):
 
 ```python
-SRC = "/Volumes/prod/f1_raw/landing"
+SRC = "/Volumes/prod/f1_raw/landing/f1-lake"  # uploads levam o prefixo do lake
 
 for dataset in ["schedule", "results", "laps", "weather"]:
-    df = spark.read.parquet(f"{SRC}/{dataset}")
+    df = (spark.read
+          .option("recursiveFileLookup", "true")   # sem isto lê 0 linhas
+          .schema(SCHEMAS[dataset])                 # inferência de diretório falha
+          .parquet(f"{SRC}/{dataset}")
+          .withColumns(_context_from_filename()))   # year/round/event/_source_file
     df.write.mode("overwrite").option("overwriteSchema", "true") \
         .saveAsTable(f"prod.f1_bronze.{dataset}")
 ```
 
+Fatos que o esboço original não cobria (descobertos na prática, 28/10):
+inferência de diretório falha (`UNABLE_TO_INFER_SCHEMA` — schemas DDL
+explícitos obrigatórios); com schema explícito o Spark não desce em subpastas
+(`recursiveFileLookup`); `input_file_name()` é proibido no UC (usar
+`_metadata`); durações do FastF1 ficam long-ns; `LapStartDate` era
+timestamp[ns] (ilegível — migrada para us; o collector grava
+`coerce_timestamps="us"`); job via `spark_python_task` + `client: "2"`.
+
 ### ✅ Checkpoint F5
-4 tabelas em `prod.f1_bronze`; contagem por ano em `results` cobre 2018→2026 (~24 GPs/ano × ~20 pilotos).
+4 tabelas em `prod.f1_bronze`; contagem por ano em `results` cobre 2018→2026 (~24 GPs/ano × ~20 pilotos). Concluído em 28/10: schedule 196, results 10.494, laps 187.182 (2023-2025), weather 34.143 (2023-2025).
 
 ---
 
 ## Fase 6 — Silver (≈ 2-3 h)
 
-> Silver = limpeza, tipagem e joins. Referência de modelagem: as feature stores do Téo (`fs_f1_driver_life`), agora com laps/weather integrados.
+> Silver = limpeza, tipagem e joins, lendo as tabelas Delta da Bronze via
+> `spark.table("prod.f1_bronze.*")` (nenhum workaround de parquet se aplica).
+> As feature stores do Téo (`fs_f1_driver_life`) ficam para a Gold (Fase 7).
 
-Tabelas alvo (todas `prod.f1_silver.*`):
+**`databricks/src/silver.py`** + job do bundle (`resources/silver.yml`,
+`f1-lake-silver`). Convenções: **snake_case em tudo**, flags boolean `fl_*`,
+durações long-ns → `*_sec` (÷1e9), double→int com NaN→null. Revisado 28/10
+contra a Bronze real — correções em relação ao esboço original:
+"positionText" nunca existiu (é `Position` → `position_order` int +
+`ClassifiedPosition` string preservada); "nacionalidade" é `country_code`
+(proxy, 3 letras); "circuito" é `location`; `Deleted` foi podada na Bronze
+(flag via `DeletedReason`); laps **não tem ids** de piloto/time (joins por
+nome — fragilidade de renomeação entre eras).
 
-| Tabela | Conteúdo |
-|---|---|
-| `dim_drivers` | 1 linha/piloto: id, nome, código, nacionalidade (dedup do histórico) |
-| `dim_constructors` | id, nome, cor do time |
-| `races` | eventos: ano, round, nome, país, circuito, datas das sessões |
-| `results_clean` | position tipada (positionText → ord), pontos, status, flags finished/DNF |
-| `laps_clean` | stint, pneu, tempos em segundos, flags pit in/out (deriva **pit stops** — sem dataset separado) |
-| `weather_clean` | temp ar/pista, umidade, chuva por sessão |
+Tabelas alvo (todas `prod.f1_silver.*`; grão → conteúdo):
 
-Padrão bronze → silver (exemplo):
+| Tabela | Grão | Conteúdo |
+|---|---|---|
+| `dim_drivers` | 1/piloto | driver_id (DriverId), driver_number, full_name, abbreviation, country_code, first/last_year, n_seasons (dedup: último não-nulo) |
+| `dim_constructors` | 1/time | team_id, team_name, team_color, first/last_year |
+| `races` | 1/evento | year, round, event_name, country, location, event_format, event_date, session1..5 + datas locais e **UTC** (sessões ficam largas como na Bronze) |
+| `results` | ano+round+event+driver | position_order (NaN→null), classified_position, grid_position, laps, points, q1/q2/q3/time_sec, status, fl_finished ('Finished' ou rlike '^\+') — todas as sessões; Gold filtra Race/Sprint |
+| `laps` | ano+round+event+driver+volta | lap_number, stint, lap_time_sec, sector1-3_time_sec, lap_start_date, speeds, compound, tyre_life, fl_pit_in/out, fl_deleted, track_status, position, is_accurate |
+| `pit_stops` | 1/pit stop (derivada) | lap_in, lap_out, pit_duration_sec — PitInTime da volta N + PitOutTime da N+1 (window por piloto/sessão) |
+| `weather` | ano+round+event+instante | time_sec (desde o início da sessão), air/track_temp, humidity, pressure, rainfall, wind_direction/speed (linha a linha; agregações ficam na Gold) |
 
-```python
-from pyspark.sql import functions as F
+Nota de cobertura: `laps`/`pit_stops`/`weather` cobrem os anos
+presentes na Bronze (2023-2025 até o backfill fechar) — a Silver é
+idempotente: `bundle run bronze` → `bundle run silver` após cada noite.
 
-results = spark.table("prod.f1_bronze.results")
-(results
-  .withColumn("position_order", F.col("Position").cast("int"))
-  .withColumn("fl_finished", F.col("Status").rlike("^Finished|^\\+").cast("int"))
-  .write.mode("overwrite").option("overwriteSchema", "true")
-  .saveAsTable("prod.f1_silver.results_clean"))
-```
-
-### ✅ Checkpoint F6
-`results_clean` joina com `dim_drivers` sem órfãos; `laps_clean` tem pit stops > 0 por corrida; totais batem com o bronze.
+### ✅ Checkpoint F6 (automático — impresso no fim do run do job)
+`results` joina com `dim_drivers` sem órfãos (left_anti = 0); corridas
+com pit stops > 0 (`event = 'Race'`); totais de linhas silver = bronze
+(results/laps/weather).
 
 ---
 
