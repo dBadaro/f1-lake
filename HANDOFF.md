@@ -52,9 +52,10 @@ redescobrir, mas não precisa reler para prosseguir.
    2026-10-27 16:24** (`python -m fastf1 auth f1tv --status`; se expirado,
    `python -m fastf1 auth f1tv --authenticate`). Token vazio = horas
    desperdiçadas com parquets vazios.
-2. **Noite 1 (fila local, ~8h):** laps/weather de `2021 --overwrite` → `2018`
-   → `2019` → `2020`. Encadear em background (mesmo esquema do run de 2025,
-   um collector por vez — nunca em paralelo).
+2. **Noite 1 (fila local, ~8h):** laps/weather de `2021` (SEM --overwrite —
+   os 32 stale foram apagados) → `2018` → `2019` → `2020`. Encadear em
+   background (mesmo esquema do run de 2025, um collector por vez — nunca em
+   paralelo).
 3. **Noite 2 (~3-4h):** `2022` → `2026` (ano corrente, só o que já correu).
    Com isso a Fase 4 fecha.
 4. **Sync final do volume:** `python collector\sync_volume.py` (cobre o que
@@ -63,29 +64,24 @@ redescobrir, mas não precisa reler para prosseguir.
    sync final é garantia, não obrigação.
 5. **Checkpoint F4** (runbook): volume com 4 pastas cobrindo 2018–2026;
    `LIST '/Volumes/prod/f1_raw/landing/results';`
-6. **Fase 5 — Bronze: BLOQUEADA na org Databricks (27/10; confirmado via UI
-   em 28/10).** `databricks/src/bronze.py` + job do bundle
-   (`resources/bronze.yml`) prontos e validados, mas o `bundle deploy` falha
-   no `jobs/create` com **403 "Organization 7474644708457523 has been
-   cancelled or is not active yet"** — o MESMO erro aparece criando job pela
-   UI (screenshot do usuário, 28/10). Workspace segue vivo para
-   leitura/armazenamento (workspace/jobs-list/Files API/SCIM = 200; volume
-   intacto); só provisão de compute é bloqueada (com/sem serverless, probes
-   A/B). Jobs/list vazio = seria o 1º job. Free Edition NÃO permite criar
-   jobs? PERMITE (doc oficial: máx 5 tasks concorrentes) — o erro é ESTADO da
-   conta. Free Edition não tem account console nem suporte ("no access to
-   account console"; "may delete inactive accounts"; quota fair-use desliga
-   compute preservando dados). **Plano:** (a) checar e-mail dbadarox por
-   aviso Databricks; (b) retry em ~1 dia (caso transitório, já houve
-   incidentes); (c) se persistir, novo workspace Free Edition → UI: criar
-   catalog `prod` + PAT novo → atualizar `.env` (HOST e TOKEN mudam!),
-   profiles do CLI e secrets do GitHub → `bundle deploy` →
-   `sync_volume.py` (~30-40 min; ADLS é a fonte da verdade). **A fila de
-   laps/weather (passo 2/3) NÃO depende do Databricks — pode rodar
-   independentemente deste bloqueio.** Detalhes do job: CLI 1.21.0 descarta
-   `python_file_task` silenciosamente → usa `spark_python_task` + serverless;
-   `--profile drk` obrigatório. Risco documentado no script: colunas
-   duration[ns] do FastF1 podem estourar o leitor Parquet do runtime.
+6. **Fase 5 — Bronze: ✅ COMPLETA (28/10 ~19h15).** Tabelas criadas e
+   validadas: `prod.f1_bronze.results` 10.494 linhas (517 arquivos,
+   2018-2026), `laps` 187.182 (344, 2023-2025), `weather` 34.143 (344,
+   2023-2025) — colunas `year`/`round`/`event`/`_source_file` derivadas do
+   nome do arquivo (event: FP1/FP2/FP3/Qualify/Sprint Qualifying/Sprint/Race).
+   Job `f1-lake-bronze` (bundle) recria tudo idempotentemente — **re-rodar
+   (`databricks bundle run bronze`, na pasta `databricks/`) após cada noite de
+   backfill** para incorporar os anos novos. Saga das correções (28/10, não
+   redescobrir): workspace novo só lança com `environments.spec.client: "2"`;
+   `python_file_task` NEM EXISTE na API deste workspace; `input_file_name()`
+   proibido no UC → usar `_metadata.file_name/file_path`; inferência de
+   diretório falha (UNABLE_TO_INFER_SCHEMA) → schemas DDL explícitos no
+   bronze.py (SCHEMAS) + `recursiveFileLookup=true` (sem isto lê 0 linhas);
+   `LapStartDate` timestamp[ns] é ilegível no Spark → migrado para us
+   (344 arquivos, `data/backfill-logs/migrate_laps_ts.py`) + collector agora
+   grava `coerce_timestamps="us"`; **laps/2021 (32 stale da era mirror) foram
+   APAGADOS do ADLS/volume** — a fila noturna recoleta 2021 SEM
+   `--overwrite`.
 7. **Pendência opcional:** trocar o secret `DATABRICKS_TOKEN` no GitHub —
    ainda tem o token ANTIGO (inválido); o `.env` local já tem o PAT novo. Sem
    isso, runs do Actions continuam sem subir ao volume (best-effort,

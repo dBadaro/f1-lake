@@ -25,4 +25,6 @@ resources:
       environments:
         - environment_key: default
           spec:
-            client: "1"
+            # workspace novo so aceita lancar no canal 2 (client "1" passa na
+            # validacao mas o runtime rejeita: "doesn't support Client-1 channel")
+            client: "2"

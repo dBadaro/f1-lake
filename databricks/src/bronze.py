@@ -15,18 +15,53 @@ Como rodar (nada aqui é executado por este repo automaticamente):
 Idempotente: CREATE OR REPLACE por tabela a cada run (volume pequeno, sem
 merge), como define a Fase 5 do runbook.
 
-Obs. de schema: os tempos do FastF1 estão gravados como duration[ns] no
-parquet (Q1/LapTime/Time etc.). Se o runtime estourar na leitura
-("Illegal Parquet type: DURATION"), tratar na hora — converter timedeltas
-na coleta ou sobrescrever o schema de leitura; silver tipa isso de todo jeito.
+Obs. de schema: ler o DIRETÓRIO sem schema explícito falha com
+UNABLE_TO_INFER_SCHEMA (arquivos heterogêneos; laps.Deleted é parquet NULL).
+Arquivo único lê normal. Por isso SCHEMAS explícitos abaixo — ver comentário
+na própria constante. Tempos duration[ns] chegam como long (nanossegundos);
+silver tipa isso.
 """
 
 from pyspark.sql import Column, SparkSession
 from pyspark.sql import functions as F
 
-SRC = "/Volumes/prod/f1_raw/landing"
+SRC = "/Volumes/prod/f1_raw/landing/f1-lake"  # os uploads levam o prefixo do lake
 TARGET = "prod.f1_bronze"
 DATASETS = ["results", "laps", "weather"]  # schedule: adicionar quando quiser
+
+# Schemas EXPLÍCITOS: a inferência de diretório do Spark falha neste corpus
+# (UNABLE_TO_INFER_SCHEMA — merge entre arquivos heterogêneos; coluna Deleted
+# dos laps está gravada como parquet NULL e durações como duration[ns]).
+# Derivados do corpus completo via data/backfill-logs/scan_schemas.py
+# (tipos estáveis entre anos — mesmo FastF1 3.9.0a0 em toda a coleta).
+# duration[ns] → long (nanossegundos); Deleted (null em 100% dos arquivos)
+# fica podada; colunas novas em arquivos futuros são ignoradas até o schema
+# ser atualizado aqui.
+SCHEMAS = {
+    "results": """
+        DriverNumber string, BroadcastName string, Abbreviation string,
+        DriverId string, TeamName string, TeamColor string, TeamId string,
+        FirstName string, LastName string, FullName string, HeadshotUrl string,
+        CountryCode string, Position double, ClassifiedPosition string,
+        GridPosition double, Q1 long, Q2 long, Q3 long, Time long,
+        Status string, Points double, Laps double
+    """,
+    "laps": """
+        Time long, Driver string, DriverNumber string, LapTime long,
+        LapNumber double, Stint double, PitOutTime long, PitInTime long,
+        Sector1Time long, Sector2Time long, Sector3Time long,
+        Sector1SessionTime long, Sector2SessionTime long, Sector3SessionTime long,
+        SpeedI1 double, SpeedI2 double, SpeedFL double, SpeedST double,
+        IsPersonalBest boolean, Compound string, TyreLife double,
+        FreshTyre boolean, Team string, LapStartTime long,
+        LapStartDate timestamp, TrackStatus string, Position double,
+        DeletedReason string, FastF1Generated boolean, IsAccurate boolean
+    """,
+    "weather": """
+        Time long, AirTemp double, Humidity double, Pressure double,
+        Rainfall boolean, TrackTemp double, WindDirection long, WindSpeed double
+    """,
+}
 
 # final do nome do arquivo → valor de event (SQ/S existem a partir de 2021;
 # sufixo desconhecido cai no fallback: o próprio código em maiúsculas)
@@ -42,11 +77,12 @@ EVENT_BY_SUFFIX = {
 
 
 def _context_from_filename() -> dict[str, Column]:
-    """year/round/event/_source_file a partir do path lido (input_file_name)."""
-    stem = F.regexp_replace(
-        F.element_at(F.split(F.input_file_name(), "/"), -1),  # 2024_01_FP1.parquet
-        r"\.parquet$",
-    )
+    """year/round/event/_source_file a partir dos metadados do arquivo lido.
+
+    input_file_name() não existe no Unity Catalog — o equivalente é o struct
+    _metadata (file_name/file_path), disponível na leitura de parquet.
+    """
+    stem = F.regexp_replace(F.col("_metadata.file_name"), r"\.parquet$", "")
     parts = F.split(stem, "_")  # [ano, round, sessao]
     suffix = parts[2]
     event_map = F.create_map(
@@ -56,7 +92,7 @@ def _context_from_filename() -> dict[str, Column]:
         "year": parts[0].cast("int"),
         "round": parts[1].cast("int"),
         "event": F.coalesce(event_map[suffix], F.upper(suffix)),
-        "_source_file": F.input_file_name(),
+        "_source_file": F.col("_metadata.file_path"),
     }
 
 
@@ -64,8 +100,10 @@ def bronze(spark: SparkSession, dataset: str) -> None:
     """(Re)cria prod.f1_bronze.{dataset} a partir de {SRC}/{dataset}/."""
     df = (
         spark.read
-        # schemas evoluem entre anos/FastF1: união de colunas, faltante → NULL
-        .option("mergeSchema", "true")
+        # com schema explícito o Spark não desce nas subpastas de anos — sem
+        # isto a tabela sai vazia (0 arquivos na "raiz" do dataset)
+        .option("recursiveFileLookup", "true")
+        .schema(SCHEMAS[dataset])
         .parquet(f"{SRC}/{dataset}")
         .withColumns(_context_from_filename())
     )

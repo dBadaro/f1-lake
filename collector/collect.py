@@ -55,7 +55,9 @@ def pace_apis() -> None:
 
 def _save(df: pd.DataFrame, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, index=False)  # idempotente: mesmo nome de arquivo sobrescreve
+    # coerce_timestamps: pandas grava ns, e o leitor Parquet do Spark/Databricks
+    # só aceita us — sem isto, colunas datetime viram timestamp[ns] ilegíveis
+    df.to_parquet(path, index=False, coerce_timestamps="us")
     log.info("salvo: %s (%d linhas)", path, len(df))
     return path
 
