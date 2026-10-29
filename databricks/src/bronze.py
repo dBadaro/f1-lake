@@ -27,7 +27,7 @@ from pyspark.sql import functions as F
 
 SRC = "/Volumes/prod/f1_raw/landing/f1-lake"  # os uploads levam o prefixo do lake
 TARGET = "prod.f1_bronze"
-DATASETS = ["results", "laps", "weather"]  # schedule: adicionar quando quiser
+DATASETS = ["schedule", "results", "laps", "weather"]
 
 # Schemas EXPLÍCITOS: a inferência de diretório do Spark falha neste corpus
 # (UNABLE_TO_INFER_SCHEMA — merge entre arquivos heterogêneos; coluna Deleted
@@ -38,6 +38,18 @@ DATASETS = ["results", "laps", "weather"]  # schedule: adicionar quando quiser
 # fica podada; colunas novas em arquivos futuros são ignoradas até o schema
 # ser atualizado aqui.
 SCHEMAS = {
+    # schedule: 1 linha/evento, nome do arquivo {ano}_{round}_schedule.parquet
+    # (event cai no fallback "SCHEDULE"); timestamps já nascem em us no FastF1.
+    "schedule": """
+        RoundNumber long, Country string, Location string,
+        OfficialEventName string, EventDate timestamp, EventName string,
+        EventFormat string, Session1 string, Session1Date timestamp,
+        Session1DateUtc timestamp, Session2 string, Session2Date timestamp,
+        Session2DateUtc timestamp, Session3 string, Session3Date timestamp,
+        Session3DateUtc timestamp, Session4 string, Session4Date timestamp,
+        Session4DateUtc timestamp, Session5 string, Session5Date timestamp,
+        Session5DateUtc timestamp, F1ApiSupport boolean
+    """,
     "results": """
         DriverNumber string, BroadcastName string, Abbreviation string,
         DriverId string, TeamName string, TeamColor string, TeamId string,

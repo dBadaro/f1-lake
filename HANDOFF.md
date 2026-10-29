@@ -64,22 +64,25 @@ redescobrir, mas não precisa reler para prosseguir.
    sync final é garantia, não obrigação.
 5. **Checkpoint F4** (runbook): volume com 4 pastas cobrindo 2018–2026;
    `LIST '/Volumes/prod/f1_raw/landing/results';`
-6. **Fase 5 — Bronze: ✅ COMPLETA (28/10 ~19h15).** Tabelas criadas e
-   validadas: `prod.f1_bronze.results` 10.494 linhas (517 arquivos,
-   2018-2026), `laps` 187.182 (344, 2023-2025), `weather` 34.143 (344,
-   2023-2025) — colunas `year`/`round`/`event`/`_source_file` derivadas do
-   nome do arquivo (event: FP1/FP2/FP3/Qualify/Sprint Qualifying/Sprint/Race).
-   Job `f1-lake-bronze` (bundle) recria tudo idempotentemente — **re-rodar
-   (`databricks bundle run bronze`, na pasta `databricks/`) após cada noite de
-   backfill** para incorporar os anos novos. Saga das correções (28/10, não
-   redescobrir): workspace novo só lança com `environments.spec.client: "2"`;
-   `python_file_task` NEM EXISTE na API deste workspace; `input_file_name()`
-   proibido no UC → usar `_metadata.file_name/file_path`; inferência de
-   diretório falha (UNABLE_TO_INFER_SCHEMA) → schemas DDL explícitos no
-   bronze.py (SCHEMAS) + `recursiveFileLookup=true` (sem isto lê 0 linhas);
-   `LapStartDate` timestamp[ns] é ilegível no Spark → migrado para us
-   (344 arquivos, `data/backfill-logs/migrate_laps_ts.py`) + collector agora
-   grava `coerce_timestamps="us"`; **laps/2021 (32 stale da era mirror) foram
+6. **Fase 5 — Bronze: ✅ COMPLETA, 4 tabelas (28/10 ~20h).** `schedule` 196
+   linhas (2018-2026), `results` 10.494 (517 arquivos, 2018-2026), `laps`
+   187.182 (344, 2023-2025), `weather` 34.143 (344, 2023-2025) — colunas
+   `year`/`round`/`event`/`_source_file` derivadas do nome do arquivo (event:
+   FP1/FP2/FP3/Qualify/Sprint Qualifying/Sprint/Race; schedule fica
+   "SCHEDULE"). Job `f1-lake-bronze` (bundle) recria tudo idempotentemente —
+   **re-rodar (`databricks bundle run bronze`, na pasta `databricks/`) após
+   cada noite de backfill** para incorporar os anos novos. Saga das correções
+   (28/10, não redescobrir): workspace novo só lança com
+   `environments.spec.client: "2"`; `python_file_task` NEM EXISTE na API
+   deste workspace; `input_file_name()` proibido no UC → usar
+   `_metadata.file_name/file_path`; inferência de diretório falha
+   (UNABLE_TO_INFER_SCHEMA) → schemas DDL explícitos no bronze.py (SCHEMAS) +
+   `recursiveFileLookup=true` (sem isto lê 0 linhas); `LapStartDate`
+   timestamp[ns] ilegível no Spark → migrado para us (344 arquivos) +
+   collector grava `coerce_timestamps="us"`; schedules tinham fuso por evento
+   (+11:00 AUS... +03:00) + colunas null (sessões canceladas 2020) → 171
+   normalizados ao schema canônico (`data/backfill-logs/normaliza_schedules.py`,
+   cast preserva instantes); **laps/2021 (32 stale da era mirror) foram
    APAGADOS do ADLS/volume** — a fila noturna recoleta 2021 SEM
    `--overwrite`.
 7. **Pendência opcional:** trocar o secret `DATABRICKS_TOKEN` no GitHub —
